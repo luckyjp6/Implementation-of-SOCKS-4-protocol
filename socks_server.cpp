@@ -19,11 +19,10 @@ public:
     client(tcp::socket s, tcp::socket c)
         :srv(std::move(s)), cli(std::move(c)) {}
     void start() {
-        // std::cout << "in client" << std::endl;
         read_srv();
         read_cli();
     }
-
+private:
     void read_cli()
     {
         auto self(shared_from_this());
@@ -101,11 +100,118 @@ public:
     char from_cli[max_length], from_srv[max_length];
 };
 
+class FTP_client : public std::enable_shared_from_this<FTP_client>
+{
+public:
+    FTP_client(short port)
+        :skt_A(io_context), skt_B(io_context), acceptor_(io_context, tcp::endpoint(tcp::v4(), port)) {}
+    void start() {
+        get_num = 0;
+        do_accept();
+    }
+private:
+    void do_accept()
+    {
+        acceptor_.async_accept(
+        [this](boost::system::error_code ec, tcp::socket socket_) {
+            if (!ec) {
+                if (get_num == 0) skt_A = std::move(socket_);
+                else if (get_num == 1) skt_B = std::move(socket_);
+                get_num++;
+                if (get_num == 2)
+                {
+                    read_A();
+                    read_B();
+                }
+                else do_accept();
+            }
+        });
+    }
+    void read_A()
+    {
+        auto self(shared_from_this());
+        memset(from_A, '\0', max_length);    
+        skt_A.async_read_some(boost::asio::buffer(from_A, max_length),
+            [this, self](boost::system::error_code ec, std::size_t length)
+            {
+                if (!ec)
+                {
+                    // printf("from A: %s, length: %ld\n", from_A, length); fflush(stdout);
+                    write_B(length);
+                }
+                else 
+                {
+                    std::cout << "bad A socket" << std::endl;
+                    exit(0);
+                }
+            });
+    }
+    void read_B()
+    {
+        auto self(shared_from_this());
+        memset(from_B, '\0', max_length);    
+        skt_B.async_read_some(boost::asio::buffer(from_B, max_length),
+            [this, self](boost::system::error_code ec, std::size_t length)
+            {
+                if (!ec)
+                {
+                    write_A(length);
+                }
+                else 
+                {
+                    std::cout << "bad B socket" << std::endl;
+                    exit(0);
+                }
+            });
+    }
+    void write_A(int length)
+    {
+        // printf("\nto client: %d %ld\n%s\n", length, strlen(from_srv), from_srv); fflush(stdout);
+        auto self(shared_from_this());
+        boost::asio::async_write(skt_A, boost::asio::buffer(from_B, length),
+            [this, self](boost::system::error_code ec, std::size_t length)
+            {
+                if (!ec)
+                {
+                    read_B();
+                }
+                else 
+                {
+                    // std::cout << "bad cli socket" << std::endl;
+                    exit(0);
+                }
+            });
+    }
+    void write_B(int length)
+    {
+        // printf("\nto server: %d %ld\n%s\n", length, strlen(from_cli), from_cli); fflush(stdout);
+        auto self(shared_from_this());
+        boost::asio::async_write(skt_B, boost::asio::buffer(from_A, length),
+            [this, self](boost::system::error_code ec, std::size_t length)
+            {
+                if (!ec)
+                {
+                    read_A();
+                }
+                else 
+                {
+                    // std::cout << "bad srv socket" << std::endl;
+                    exit(0);
+                }
+            });
+    }
+    
+    int get_num;
+    tcp::socket skt_A, skt_B;
+    tcp::acceptor acceptor_;
+    char from_A[max_length], from_B[max_length];
+};
+
 class session : public std::enable_shared_from_this<session>
 {
 public:
-    session(tcp::socket socket_) 
-        :srv(io_context), cli(std::move(socket_)) {dst_port = 0; reply_state = 90;}
+    session(tcp::socket socket_, short port) 
+        :srv(io_context), cli(std::move(socket_)) {dst_port = 0; reply_state = 90; available_port = port;}
     
     void start() { read_req(); }
 
@@ -184,7 +290,20 @@ private:
             {});
         if (reply_state != 90) end_client(false);
     }
-    
+    void send_bind_reply()
+    {
+        char msg[10] = {0};
+        msg[1] += reply_state;
+
+        msg[2] += available_port/256;
+        msg[3] += available_port%256;
+
+        auto self(shared_from_this());
+        boost::asio::async_write(cli, boost::asio::buffer(msg, 9),
+            [this, self](boost::system::error_code ec, std::size_t /*length*/)
+            {});
+    }
+
     void connect_to_remote_server()
     {
         tcp::endpoint ep(boost::asio::ip::address::from_string(dst_ip), dst_port);
@@ -241,7 +360,28 @@ private:
                     my_print_request();
                     send_socks_reply();  // terminate the session if reply_state != 90
                     
-                    std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
+                    int pid = fork();
+                    if (pid == 0) 
+                    {
+                        std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
+                        io_context.run();
+                        exit(0);
+                    }
+
+                    srv.close();
+                    cli.close();
+                    
+                    if (cd == 2)
+                    {
+                        int pid = fork();
+                        if (pid == 0)
+                        {
+                            send_bind_reply();
+                            std::make_shared<FTP_client>(available_port) -> start();
+                            io_context.run();
+                            exit(0);
+                        }else return;
+                    }
                 }
             });
         return;
@@ -254,6 +394,7 @@ private:
             {});
     }
 
+    short available_port;
     tcp::socket srv, cli;
     bool four_a = false;
     int reply_state;
@@ -267,7 +408,7 @@ class server
 {
 public:
     server(short port)
-        : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)) { do_accept(); }
+        : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)) { do_accept(); available_port = port;}
 
 private:
     void do_accept()
@@ -275,21 +416,16 @@ private:
         acceptor_.async_accept(
         [this](boost::system::error_code ec, tcp::socket socket_) {
             if (!ec) {
-                int pid = fork();
-                if (pid == 0) {
-                    acceptor_.close();
-                    std::make_shared<session>(std::move(socket_))->start();
-                    io_context.run();
-                    return;  
-                }
-                else {
-                    socket_.close();
-                    do_accept();
-                }
+                std::make_shared<session>(std::move(socket_), available_port)->start();
+                
+                available_port++;
+                socket_.close();
+                do_accept();
             }
         });
     }
 
+    short available_port;
     tcp::acceptor acceptor_;
 };
 
