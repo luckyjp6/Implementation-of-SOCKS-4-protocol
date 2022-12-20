@@ -8,7 +8,7 @@
 #include <boost/asio.hpp>
 #include <boost/system/error_code.hpp>
 
-#define max_length 1000000
+#define max_length 100000
 
 using boost::asio::ip::tcp;
 boost::asio::io_context io_c;
@@ -26,7 +26,7 @@ private:
     void read_cli()
     {
         auto self(shared_from_this());
-        memset(from_cli, '\0', max_length);    
+        memset(from_cli, 0, max_length);
         cli.async_read_some(boost::asio::buffer(from_cli, max_length),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
@@ -45,7 +45,7 @@ private:
     void read_srv()
     {
         auto self(shared_from_this());
-        memset(from_srv, '\0', max_length);    
+        memset(from_srv, 0, max_length);
         srv.async_read_some(boost::asio::buffer(from_srv, max_length),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
@@ -63,8 +63,9 @@ private:
     void write_cli(int length)
     {
         // printf("\nto client: %d %ld\n", length, strlen(from_srv)); fflush(stdout);
+        if (length <= 0) return;
         auto self(shared_from_this());
-        boost::asio::async_write(cli, boost::asio::buffer(from_srv, strlen(from_srv)),
+        boost::asio::async_write(cli, boost::asio::buffer(from_srv, length),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
                 if (!ec)
@@ -83,7 +84,7 @@ private:
     {
         // printf("\nto server: %d %ld\n%s\n", length, strlen(from_cli), from_cli); fflush(stdout);
         auto self(shared_from_this());
-        boost::asio::async_write(srv, boost::asio::buffer(from_cli, strlen(from_cli)),
+        boost::asio::async_write(srv, boost::asio::buffer(from_cli, length),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
                 if (!ec)
@@ -272,7 +273,7 @@ private:
 
         if (four_a)
         {
-            std::size_t i = 8;
+            int i = 8;
             while(i < length && rq[i]) i++;
             i++;
             char *start = rq+i;
@@ -335,9 +336,9 @@ private:
         msg[1] += reply_state;
 
         auto self(shared_from_this());
-        boost::asio::async_write(cli, boost::asio::buffer(msg, 9),
-            [this, self](boost::system::error_code ec, std::size_t /*length*/)
-            {});
+        boost::asio::async_write(cli, boost::asio::buffer(msg, 8),
+            [this, self](boost::system::error_code ec, std::size_t length){});
+            
         if (reply_state != 90) end_client(false);
     }
     void send_bind_reply()
@@ -349,8 +350,8 @@ private:
         msg[3] += available_port%256;
 
         auto self(shared_from_this());
-        boost::asio::async_write(cli, boost::asio::buffer(msg, 9),
-            [this, self](boost::system::error_code ec, std::size_t /*length*/)
+        boost::asio::async_write(cli, boost::asio::buffer(msg, 8),
+            [this, self](boost::system::error_code ec, std::size_t length)
             {});
     }
 
@@ -400,7 +401,7 @@ private:
             {
                 if (!ec)
                 {
-                    printf("get request, length: %d\n", length);
+                    // printf("get request, length: %ld\n", length);
                     my_parse_request(length);
 
                     my_check_request();
@@ -432,9 +433,10 @@ private:
                         }
                         else 
                         {
+                            io_c.notify_fork(boost::asio::io_context::fork_parent);
                             srv.close();
                             cli.close();
-                            io_c.notify_fork(boost::asio::io_context::fork_parent);
+                            return;
                         }
                     }
                     // else if (cd == 2)
@@ -512,8 +514,8 @@ private:
                 }
                 if (pid == 0)
                 {
-                    acceptor_.close();
                     io_c.notify_fork(boost::asio::io_context::fork_child);
+                    acceptor_.close();
                     std::make_shared<session>(std::move(socket_), available_port)->start();
                 }
                 if (pid > 0)
