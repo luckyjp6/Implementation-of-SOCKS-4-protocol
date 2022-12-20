@@ -4,7 +4,7 @@
 #include <utility>
 #include <unistd.h>
 #include <cstring>
-// #include <sys/wait.h>
+#include <fcntl.h>
 #include <boost/asio.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -62,13 +62,14 @@ private:
     }
     void write_cli(int length)
     {
-        // printf("\nto client: %d %ld\n%s\n", length, strlen(from_srv), from_srv); fflush(stdout);
+        printf("\nto client: %d %ld\n", length, strlen(from_srv)); fflush(stdout);
         auto self(shared_from_this());
         boost::asio::async_write(cli, boost::asio::buffer(from_srv, length),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
                 if (!ec)
                 {
+                    printf("actual send: %ld\n", length);fflush(stdout);
                     read_srv();
                 }
                 else 
@@ -254,9 +255,9 @@ private:
         for (i = 0; i < 8 ; i++)
         {
             rq_int[i] = (int)((unsigned char)(rq[i]));
-            // printf("%d ", rq_int[i]);
+            printf("%d ", rq_int[i]);
         }
-        // printf("\n");
+        printf("\n");
         if (i < 8) {reply_state = 91; return; }
         vn = rq_int[0];
         cd = rq_int[1];
@@ -278,7 +279,54 @@ private:
         }
         fflush(stdout);  
     }
-    
+    void my_check_request()
+    {
+        int conf = open("socks.conf", O_RDONLY);
+        char line[10000];
+        int len = read(conf, line, 10000);
+
+        if (len <= 0)
+        {
+            reply_state = 91;
+            return;
+        }
+
+        int ip_slice[4];
+        sscanf(dst_ip, "%d.%d.%d.%d", &ip_slice[0], &ip_slice[1], &ip_slice[2], &ip_slice[3]);
+
+        char *now = line;
+        char *remain = line;
+        while(true)
+        {
+            now = strtok_r(remain, "\n", &remain);
+            if (now == NULL) break;
+            
+            char command;
+            char ip_part[20];
+            sscanf(now, "permit %c %s", &command, ip_part);
+            if (cd == 1 && command != 'c') continue;
+            if (cd == 2 && command != 'b') continue;
+
+            char *ii = ip_part;
+            bool met = true;
+            for (int i = 0; i < 4; i++) 
+            {
+                char *n = strtok_r(ii, ".", &ii);
+                if (n == NULL) break;
+                if (strcmp("*", n) == 0) continue;
+                if (atoi(n) != ip_slice[i])
+                {
+                    met = false;
+                    break;
+                }
+            }
+            if (met) return;
+        }
+
+        reply_state = 91;
+        return;
+    }
+
     void send_socks_reply()
     {
         char msg[10] = {0};
@@ -306,12 +354,14 @@ private:
 
     void connect_to_remote_server()
     {
+        printf("start connecting...\n");
         tcp::endpoint ep(boost::asio::ip::address::from_string(dst_ip), dst_port);
         // tcp::socket srv(io_c, ep.protocol());
         boost::system::error_code ec;
         srv.connect(ep, ec);
+        
         if (ec) {reply_state = 92; return;}
-
+        else printf("connect successfully\n");
         // if (cd == 1) std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
         // else if (cd == 2) std::make_shared<FTP_client>(std::move(acceptor_), std::move(srv), std::move(cli)) -> start();
     }
@@ -348,35 +398,74 @@ private:
             {
                 if (!ec)
                 {
-                    // printf("get request, length: %d\n", length);
+                    printf("get request, length: %d\n", length);
                     my_parse_request(length);
+
+                    my_check_request();
+                    if (reply_state != 90) 
+                    {
+                        my_print_request();
+                        send_socks_reply();// terminate the process if reply_state != 90
+                    }
                     
-                    if (reply_state == 90)
+                    if (cd == 1)
                     {
                         // connect to the remote server
-                        if (four_a) get_server_ip();
-                        else connect_to_remote_server();
-                    }
-                
-                    my_print_request();
-                    send_socks_reply();  // terminate the session if reply_state != 90
-                    
-                    std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
-
-                    if (cd == 2)
-                    {
+                        io_c.notify_fork(boost::asio::io_context::fork_prepare);
                         int pid = fork();
-                        if (pid == 0)
+                        if (pid < 0)
                         {
-                            send_bind_reply();
+                            printf("failed to fork\n");
+                            exit(0);
+                        }
+                        else if (pid == 0)
+                        {
+                            io_c.notify_fork(boost::asio::io_context::fork_child);
+                            if (four_a) get_server_ip();
+                            else connect_to_remote_server();
+                            my_print_request();
+                            send_socks_reply();// terminate the process if reply_state != 90
+                            std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
+                            return;
+                        }
+                        else 
+                        {
                             srv.close();
                             cli.close();
-                            std::make_shared<FTP_client>(available_port) -> start();
+                            io_c.notify_fork(boost::asio::io_context::fork_parent);
                         }
                     }
-                    
-                    // io_c.run();
-                    // exit(0);
+                    // else if (cd == 2)
+                    // {
+                    //     io_c.notify_fork(boost::asio::io_context::fork_prepare);
+                    //     int pid = fork();
+                    //     if (pid < 0)
+                    //     {
+                    //         printf("failed to fork\n");
+                    //         do_accept();
+                    //         exit(0);
+                    //     }
+                    //     else if (pid == 0)
+                    //     {
+                    //         io_c.notify_fork(boost::asio::io_context::fork_child);
+                            
+                    //         my_print_request();
+                    //         send_bind_reply();// terminate the process if reply_state != 90
+                    //         return;
+                    //     }
+                    //     else io_c.notify_fork(boost::asio::io_context::fork_parent);
+                    // }
+                    // if (cd == 2)
+                    // {
+                    //     int pid = fork();
+                    //     if (pid == 0)
+                    //     {
+                    //         send_bind_reply();
+                    //         srv.close();
+                    //         cli.close();
+                    //         std::make_shared<FTP_client>(available_port) -> start();
+                    //     }
+                    // }
                 }
             });
         return;
