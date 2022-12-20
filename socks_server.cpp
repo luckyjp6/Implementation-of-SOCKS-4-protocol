@@ -62,14 +62,14 @@ private:
     }
     void write_cli(int length)
     {
-        printf("\nto client: %d %ld\n", length, strlen(from_srv)); fflush(stdout);
+        // printf("\nto client: %d %ld\n", length, strlen(from_srv)); fflush(stdout);
         auto self(shared_from_this());
-        boost::asio::async_write(cli, boost::asio::buffer(from_srv, length),
+        boost::asio::async_write(cli, boost::asio::buffer(from_srv, strlen(from_srv)),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
                 if (!ec)
                 {
-                    printf("actual send: %ld\n", length);fflush(stdout);
+                    // printf("actual send: %ld\n", length);fflush(stdout);
                     read_srv();
                 }
                 else 
@@ -83,7 +83,7 @@ private:
     {
         // printf("\nto server: %d %ld\n%s\n", length, strlen(from_cli), from_cli); fflush(stdout);
         auto self(shared_from_this());
-        boost::asio::async_write(srv, boost::asio::buffer(from_cli, length),
+        boost::asio::async_write(srv, boost::asio::buffer(from_cli, strlen(from_cli)),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
                 if (!ec)
@@ -243,6 +243,8 @@ private:
         // <Reply>: Accept or Reject
         if (reply_state == 90) printf("Accept\n");
         else printf("Reject\n");
+
+        printf("\n");
         
         fflush(stdout);
         return;
