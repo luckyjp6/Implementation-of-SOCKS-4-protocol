@@ -4,6 +4,7 @@
 #include <utility>
 #include <unistd.h>
 #include <cstring>
+#include <wait.h>
 #include <boost/asio.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -405,7 +406,7 @@ int main()
 			
 			io_context.run();
 			return 0;
-		}else wait();
+		}else wait(0);
     }
     
 

@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <fcntl.h>
+#include <wait.h>
 #include <boost/asio.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -105,115 +106,40 @@ private:
 class FTP_client : public std::enable_shared_from_this<FTP_client>
 {
 public:
-    FTP_client(short port)
-        :skt_A(io_c), skt_B(io_c), acceptor_(io_c, tcp::endpoint(tcp::v4(), port)) {}
-    void start() {
-        get_num = 0;
-        do_accept();
-    }
+    FTP_client(char *d_ip, int d_port, tcp::socket c, short available_port)
+        :accept_data(io_c, tcp::endpoint(tcp::v4(), available_port)), srv(io_c), cli(std::move(c))
+        {
+            printf("in FTP client, with available = %d\n", available_port);
+            strcpy(dst_ip, d_ip);
+            dst_port = d_port;
+        }
+    void start() { do_accept(); }
 private:
     void do_accept()
     {
-        acceptor_.async_accept(
-        [this](boost::system::error_code ec, tcp::socket socket_) {
-            if (!ec) {
-                if (get_num == 0) skt_A = std::move(socket_);
-                else if (get_num == 1) skt_B = std::move(socket_);
-                get_num++;
-                if (get_num == 2)
-                {
-                    read_A();
-                    read_B();
-                }
-                else do_accept();
-            }
-        });
+        printf("\nstart accept...\n");
+        boost::system::error_code error;
+        accept_data.accept(srv, error);
+        if (error) do_accept();
+        else {
+            printf("connected\n");
+            accept_data.close();
+            std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
+            return;
+        }
     }
-    void read_A()
-    {
-        auto self(shared_from_this());
-        memset(from_A, '\0', max_length);    
-        skt_A.async_read_some(boost::asio::buffer(from_A, max_length),
-            [this, self](boost::system::error_code ec, std::size_t length)
-            {
-                if (!ec)
-                {
-                    // printf("from A: %s, length: %ld\n", from_A, length); fflush(stdout);
-                    write_B(length);
-                }
-                else 
-                {
-                    std::cout << "bad A socket" << std::endl;
-                    exit(0);
-                }
-            });
-    }
-    void read_B()
-    {
-        auto self(shared_from_this());
-        memset(from_B, '\0', max_length);    
-        skt_B.async_read_some(boost::asio::buffer(from_B, max_length),
-            [this, self](boost::system::error_code ec, std::size_t length)
-            {
-                if (!ec)
-                {
-                    write_A(length);
-                }
-                else 
-                {
-                    std::cout << "bad B socket" << std::endl;
-                    exit(0);
-                }
-            });
-    }
-    void write_A(int length)
-    {
-        // printf("\nto client: %d %ld\n%s\n", length, strlen(from_srv), from_srv); fflush(stdout);
-        auto self(shared_from_this());
-        boost::asio::async_write(skt_A, boost::asio::buffer(from_B, length),
-            [this, self](boost::system::error_code ec, std::size_t length)
-            {
-                if (!ec)
-                {
-                    read_B();
-                }
-                else 
-                {
-                    // std::cout << "bad cli socket" << std::endl;
-                    exit(0);
-                }
-            });
-    }
-    void write_B(int length)
-    {
-        // printf("\nto server: %d %ld\n%s\n", length, strlen(from_cli), from_cli); fflush(stdout);
-        auto self(shared_from_this());
-        boost::asio::async_write(skt_B, boost::asio::buffer(from_A, length),
-            [this, self](boost::system::error_code ec, std::size_t length)
-            {
-                if (!ec)
-                {
-                    read_A();
-                }
-                else 
-                {
-                    // std::cout << "bad srv socket" << std::endl;
-                    exit(0);
-                }
-            });
-    }
-    
-    int get_num;
-    tcp::socket skt_A, skt_B;
-    tcp::acceptor acceptor_;
-    char from_A[max_length], from_B[max_length];
+
+    tcp::acceptor accept_data;
+    tcp::socket srv, cli;
+    int dst_port;
+    char dst_ip[20];
 };
 
 class session : public std::enable_shared_from_this<session>
 {
 public:
-    session(tcp::socket socket_, short port) 
-        :srv(io_c), cli(std::move(socket_)) {dst_port = 0; reply_state = 90; available_port = port;}
+    session(tcp::socket socket_, int a_port) 
+        :srv(io_c), cli(std::move(socket_)) {dst_port = 0; reply_state = 90; available_port = a_port; }
     
     void start() { read_req(); }
 
@@ -335,38 +261,26 @@ private:
         char msg[10] = {0};
         msg[1] += reply_state;
 
+        if (cd == 2)
+        {
+            msg[2] += available_port/256;
+            msg[3] += available_port%256;
+        }
+
         auto self(shared_from_this());
         boost::asio::async_write(cli, boost::asio::buffer(msg, 8),
             [this, self](boost::system::error_code ec, std::size_t length){});
-            
+
         if (reply_state != 90) end_client(false);
-    }
-    void send_bind_reply()
-    {
-        char msg[10] = {0};
-        msg[1] += reply_state;
-
-        msg[2] += available_port/256;
-        msg[3] += available_port%256;
-
-        auto self(shared_from_this());
-        boost::asio::async_write(cli, boost::asio::buffer(msg, 8),
-            [this, self](boost::system::error_code ec, std::size_t length)
-            {});
     }
 
     void connect_to_remote_server()
     {
-        printf("start connecting...\n");
         tcp::endpoint ep(boost::asio::ip::address::from_string(dst_ip), dst_port);
-        // tcp::socket srv(io_c, ep.protocol());
         boost::system::error_code ec;
         srv.connect(ep, ec);
         
         if (ec) {reply_state = 92; return;}
-        else printf("connect successfully\n");
-        // if (cd == 1) std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
-        // else if (cd == 2) std::make_shared<FTP_client>(std::move(acceptor_), std::move(srv), std::move(cli)) -> start();
     }
     void get_server_ip()
     {
@@ -384,7 +298,7 @@ private:
         {
             srv.connect(*iter, ec);
             if (ec) srv.close();
-            // else break;
+            else break;
         }
         if (ec) {reply_state = 92; return;}
         strcpy(dst_ip, srv.remote_endpoint().address().to_string().data());
@@ -409,70 +323,27 @@ private:
                     {
                         my_print_request();
                         send_socks_reply();// terminate the process if reply_state != 90
+                        return;
                     }
-                    
+
                     if (cd == 1)
                     {
-                        // connect to the remote server
-                        io_c.notify_fork(boost::asio::io_context::fork_prepare);
-                        int pid = fork();
-                        if (pid < 0)
-                        {
-                            printf("failed to fork\n");
-                            exit(0);
-                        }
-                        else if (pid == 0)
-                        {
-                            io_c.notify_fork(boost::asio::io_context::fork_child);
-                            if (four_a) get_server_ip();
-                            else connect_to_remote_server();
-                            my_print_request();
-                            send_socks_reply();// terminate the process if reply_state != 90
-                            std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
-                            return;
-                        }
-                        else 
-                        {
-                            io_c.notify_fork(boost::asio::io_context::fork_parent);
-                            srv.close();
-                            cli.close();
-                            return;
-                        }
+                        if (four_a) get_server_ip();
+                        else connect_to_remote_server();
+                        my_print_request();
+                        send_socks_reply();// terminate the process if reply_state != 90
+                        std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
                     }
-                    // else if (cd == 2)
-                    // {
-                    //     io_c.notify_fork(boost::asio::io_context::fork_prepare);
-                    //     int pid = fork();
-                    //     if (pid < 0)
-                    //     {
-                    //         printf("failed to fork\n");
-                    //         do_accept();
-                    //         exit(0);
-                    //     }
-                    //     else if (pid == 0)
-                    //     {
-                    //         io_c.notify_fork(boost::asio::io_context::fork_child);
-                            
-                    //         my_print_request();
-                    //         send_bind_reply();// terminate the process if reply_state != 90
-                    //         return;
-                    //     }
-                    //     else io_c.notify_fork(boost::asio::io_context::fork_parent);
-                    // }
-                    // if (cd == 2)
-                    // {
-                    //     int pid = fork();
-                    //     if (pid == 0)
-                    //     {
-                    //         send_bind_reply();
-                    //         srv.close();
-                    //         cli.close();
-                    //         std::make_shared<FTP_client>(available_port) -> start();
-                    //     }
-                    // }
+                    else if (cd == 2)
+                    {
+                        my_print_request();
+                        send_socks_reply();// terminate the process if reply_state != 90
+                        std::make_shared<FTP_client>(dst_ip, dst_port, std::move(cli), available_port) -> start();
+                        sleep(4);
+                    }
                 }
+                else exit(0);
             });
-        return;
     }
     void do_write(std::string msg)
     {
@@ -482,9 +353,9 @@ private:
             {});
     }
 
-    short available_port;
     tcp::socket srv, cli;
     bool four_a = false;
+    short available_port;
     int reply_state;
     char rq[max_length];
     int vn, cd, userid, dst_port;
@@ -496,7 +367,7 @@ class server
 {
 public:
     server(short port)
-        : acceptor_(io_c, tcp::endpoint(tcp::v4(), port)) { do_accept(); available_port = port;}
+        : acceptor_(io_c, tcp::endpoint(tcp::v4(), port)) { available_port = port+1; do_accept(); }
 
 private:
     void do_accept()
@@ -509,23 +380,23 @@ private:
                 if (pid < 0)
                 {
                     printf("failed to fork\n");
-                    do_accept();
+                    exit(0);
+                }
+                else if (pid == 0)
+                {
+                    acceptor_.close();
+                    io_c.notify_fork(boost::asio::io_context::fork_child);
+                    std::make_shared<session>(std::move(socket_), available_port)->start();
                     return;
                 }
-                if (pid == 0)
+                else 
                 {
-                    io_c.notify_fork(boost::asio::io_context::fork_child);
-                    acceptor_.close();
-                    std::make_shared<session>(std::move(socket_), available_port)->start();
-                }
-                if (pid > 0)
-                {
-                    io_c.notify_fork(boost::asio::io_context::fork_parent);
-                    available_port++;
                     socket_.close();
+                    available_port++;
                     do_accept();
-                }                
-            }
+                    return;
+                }           
+            }else printf("err\n");
         });
     }
 
@@ -533,18 +404,18 @@ private:
     tcp::acceptor acceptor_;
 };
 
-// void sig_chld(int signo)
-// {
-// 	int	stat;
+void sig_chld(int signo)
+{
+	int	stat;
 
-// 	while (waitpid(-1, &stat, WNOHANG) > 0);
+	while (waitpid(-1, &stat, WNOHANG) > 0);
 
-// 	return;
-// }
+	return;
+}
 
 int main(int argc, char **argv)
 {
-    // signal(SIGCHLD, sig_chld);
+    signal(SIGCHLD, sig_chld);
     if (argc != 2)
     {
         std::cerr << "Usage: socks_server <port>\n";
