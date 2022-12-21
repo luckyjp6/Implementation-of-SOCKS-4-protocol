@@ -31,16 +31,8 @@ private:
         cli.async_read_some(boost::asio::buffer(from_cli, max_length),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
-                if (!ec)
-                {
-                    // printf("from client: %s, length: %ld\n", from_cli, length); fflush(stdout);
-                    write_srv(length);
-                }
-                else 
-                {
-                    // std::cout << "bad cli socket" << std::endl;
-                    exit(0);
-                }
+                if (!ec)  write_srv(length);
+                else exit(0);
             });
     }
     void read_srv()
@@ -50,15 +42,8 @@ private:
         srv.async_read_some(boost::asio::buffer(from_srv, max_length),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
-                if (!ec)
-                {
-                    write_cli(length);
-                }
-                else 
-                {
-                    // std::cout << "bad srv socket" << std::endl;
-                    exit(0);
-                }
+                if (!ec) write_cli(length);
+                else exit(0);
             });
     }
     void write_cli(int length)
@@ -69,34 +54,19 @@ private:
         boost::asio::async_write(cli, boost::asio::buffer(from_srv, length),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
-                if (!ec)
-                {
-                    // printf("actual send: %ld\n", length);fflush(stdout);
-                    read_srv();
-                }
-                else 
-                {
-                    // std::cout << "bad cli socket" << std::endl;
-                    exit(0);
-                }
+                if (!ec) read_srv();
+                else exit(0);
             });
     }
     void write_srv(int length)
     {
-        // printf("\nto server: %d %ld\n%s\n", length, strlen(from_cli), from_cli); fflush(stdout);
+        // printf("\nto server: %d %ld\n", length, strlen(from_cli)); fflush(stdout);
         auto self(shared_from_this());
         boost::asio::async_write(srv, boost::asio::buffer(from_cli, length),
             [this, self](boost::system::error_code ec, std::size_t length)
             {
-                if (!ec)
-                {
-                    read_cli();
-                }
-                else 
-                {
-                    // std::cout << "bad srv socket" << std::endl;
-                    exit(0);
-                }
+                if (!ec) read_cli();
+                else exit(0);
             });
     }
     tcp::socket srv, cli;
@@ -106,33 +76,91 @@ private:
 class FTP_client : public std::enable_shared_from_this<FTP_client>
 {
 public:
-    FTP_client(char *d_ip, int d_port, tcp::socket c, short available_port)
+    FTP_client(char *d_ip, tcp::socket c, short available_port)
         :accept_data(io_c, tcp::endpoint(tcp::v4(), available_port)), srv(io_c), cli(std::move(c))
         {
-            printf("in FTP client, with available = %d\n", available_port);
+            // printf("in FTP client, with available = %d\n", available_port);
             strcpy(dst_ip, d_ip);
-            dst_port = d_port;
         }
     void start() { do_accept(); }
 private:
     void do_accept()
     {
-        printf("\nstart accept...\n");
         boost::system::error_code error;
         accept_data.accept(srv, error);
         if (error) do_accept();
         else {
-            printf("connected\n");
             accept_data.close();
-            std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
+            if (strcmp(srv.remote_endpoint().address().to_string().data(), dst_ip) != 0)
+            {
+                srv.close();
+                do_accept();
+                return;
+            }
+            // std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
+            read_cli();
+            read_srv();
             return;
         }
+        // accept_data.async_accept(
+        // [this](boost::system::error_code ec, tcp::socket socket_) {
+        //     if (!ec) {
+        //         accept_data.close();
+        //         std::make_shared<client>(std::move(srv), std::move(cli)) -> start();
+        //         return;
+        //     }
+        //     else do_accept();
+        // });
     }
-
+    void read_cli()
+    {
+        auto self(shared_from_this());
+        memset(from_cli, 0, max_length);
+        cli.async_read_some(boost::asio::buffer(from_cli, max_length),
+            [this, self](boost::system::error_code ec, std::size_t length)
+            {
+                if (!ec)  write_srv(length);
+                else exit(0);
+            });
+    }
+    void read_srv()
+    {
+        auto self(shared_from_this());
+        memset(from_srv, 0, max_length);
+        srv.async_read_some(boost::asio::buffer(from_srv, max_length),
+            [this, self](boost::system::error_code ec, std::size_t length)
+            {
+                if (!ec) write_cli(length);
+                else exit(0);
+            });
+    }
+    void write_cli(int length)
+    {
+        // printf("\nto client: %d %ld\n", length, strlen(from_srv)); fflush(stdout);
+        if (length <= 0) return;
+        auto self(shared_from_this());
+        boost::asio::async_write(cli, boost::asio::buffer(from_srv, length),
+            [this, self](boost::system::error_code ec, std::size_t length)
+            {
+                if (!ec) read_srv();
+                else exit(0);
+            });
+    }
+    void write_srv(int length)
+    {
+        // printf("\nto server: %d %ld\n", length, strlen(from_cli)); fflush(stdout);
+        auto self(shared_from_this());
+        boost::asio::async_write(srv, boost::asio::buffer(from_cli, length),
+            [this, self](boost::system::error_code ec, std::size_t length)
+            {
+                if (!ec) read_cli();
+                else exit(0);
+            });
+    }
     tcp::acceptor accept_data;
     tcp::socket srv, cli;
-    int dst_port;
     char dst_ip[20];
+    char from_cli[max_length], from_srv[max_length];
 };
 
 class session : public std::enable_shared_from_this<session>
@@ -184,9 +212,9 @@ private:
         for (i = 0; i < 8 ; i++)
         {
             rq_int[i] = (int)((unsigned char)(rq[i]));
-            printf("%d ", rq_int[i]);
+            // printf("%d ", rq_int[i]);
         }
-        printf("\n");
+        // printf("\n");
         if (i < 8) {reply_state = 91; return; }
         vn = rq_int[0];
         cd = rq_int[1];
@@ -204,7 +232,6 @@ private:
             i++;
             char *start = rq+i;
             sprintf(domain_name, "%s", start);
-            // printf("domain name: %s\n", domain_name);
         }
         fflush(stdout);  
     }
@@ -338,7 +365,7 @@ private:
                     {
                         my_print_request();
                         send_socks_reply();// terminate the process if reply_state != 90
-                        std::make_shared<FTP_client>(dst_ip, dst_port, std::move(cli), available_port) -> start();
+                        std::make_shared<FTP_client>(dst_ip, std::move(cli), available_port) -> start();
                         sleep(4);
                     }
                 }
