@@ -8,8 +8,6 @@ CXX_LIB_PARAMS=$(addprefix -L , $(CXX_LIB_DIRS))
 all: socks_server http_server console
 socks_server: socks_server.cpp
 	$(CXX) socks_server.cpp -o socks_server $(CXX_INCLUDE_PARAMS) $(CXX_LIB_PARAMS) $(CXXFLAGS)
-http_server: http_server.cpp
-	$(CXX) http_server.cpp -o http_server $(CXX_INCLUDE_PARAMS) $(CXX_LIB_PARAMS) $(CXXFLAGS)
 console: socks_console.cpp
 	$(CXX) socks_console.cpp -o hw4.cgi $(CXX_INCLUDE_PARAMS) $(CXX_LIB_PARAMS) $(CXXFLAGS)
 clean:
