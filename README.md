@@ -43,7 +43,7 @@ permit b *.*.*.*
 1. 允許所有連線
 2. 僅允許連線至140.113.xx.xx (交大ip)
 3. 僅允續連線至123.45.67.89
-4. 允許所有連線
+4. 允許所有連線  
 https://user-images.githubusercontent.com/96563567/225557144-a17d777a-f866-4729-a01e-b17d0a9df7a8.mp4
 
 
