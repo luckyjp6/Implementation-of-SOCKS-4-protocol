@@ -18,7 +18,8 @@
 - Bind：處理multi-connection protocol的網路連線，如FTP。
 
 ## socks.conf
-socks server將依據socks.conf內容決定允許連線至哪些ip address的服務。
+- socks server將依據socks.conf內容決定允許連線至哪些ip address的服務。
+- 可以設定多條規則，如可以有多條permit c的規則
 ### 格式
 允許所有連線：
 ```
