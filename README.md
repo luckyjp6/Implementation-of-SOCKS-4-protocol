@@ -36,7 +36,7 @@ permit b *.*.*.*
 ## Demo
 使用Firefox demo。
 ### Firefox proxy setting
-請先設定proxy為socks server架設機器的ip及對應的port
+設定proxy為socks server架設機器的ip及對應的port
 ![image](https://user-images.githubusercontent.com/96563567/225553898-ec327ec5-f148-4ce8-9140-89de4511a45a.png)
 
 ### Demo scenario
